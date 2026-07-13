@@ -255,14 +255,36 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 	require.NotContains(t, ids, "zz-unpriced-model")
 
 	pricingByName := pricingByModelName(model.GetPricing())
-	assert.NotContains(t, pricingByName, "zz-unpriced-model")
-	assert.NotContains(t, pricingByName, "zz-tiered-empty-expr-model")
-	assert.NotContains(t, pricingByName, "zz-tiered-missing-expr-model")
-
 	visiblePricing, ok := pricingByName["zz-tiered-visible-model"]
 	require.True(t, ok)
 	require.Equal(t, "tiered_expr", visiblePricing.BillingMode)
 	require.NotEmpty(t, visiblePricing.BillingExpr)
+
+	emptyExprPricing, ok := pricingByName["zz-tiered-empty-expr-model"]
+	require.True(t, ok)
+	require.Empty(t, emptyExprPricing.BillingMode)
+	require.Empty(t, emptyExprPricing.BillingExpr)
+
+	missingExprPricing, ok := pricingByName["zz-tiered-missing-expr-model"]
+	require.True(t, ok)
+	require.Empty(t, missingExprPricing.BillingMode)
+	require.Empty(t, missingExprPricing.BillingExpr)
+
+	pricingRecorder := httptest.NewRecorder()
+	pricingContext, _ := gin.CreateTestContext(pricingRecorder)
+	pricingContext.Request = httptest.NewRequest(http.MethodGet, "/api/pricing", nil)
+	pricingContext.Set("id", 1001)
+	GetPricing(pricingContext)
+
+	var pricingPayload struct {
+		Data []model.Pricing `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(pricingRecorder.Body.Bytes(), &pricingPayload))
+	visiblePricingByName := pricingByModelName(pricingPayload.Data)
+	assert.Contains(t, visiblePricingByName, "zz-tiered-visible-model")
+	assert.NotContains(t, visiblePricingByName, "zz-tiered-empty-expr-model")
+	assert.NotContains(t, visiblePricingByName, "zz-tiered-missing-expr-model")
+	assert.NotContains(t, visiblePricingByName, "zz-unpriced-model")
 }
 
 func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T) {

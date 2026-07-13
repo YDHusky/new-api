@@ -113,6 +113,12 @@ func TestHeaderNavModuleAuthRequiresLoginForRankings(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, recorder.Code)
 }
 
+func TestUserRankingEnabledReadsRankingsModuleSetting(t *testing.T) {
+	withHeaderNavModules(t, `{"rankings":{"enabled":true,"requireAuth":false,"userRankingEnabled":true}}`)
+
+	require.True(t, UserRankingEnabled())
+}
+
 func TestHeaderNavModuleAuthRejectsLegacyDisabledModule(t *testing.T) {
 	raw := `{"rankings":false}`
 	withHeaderNavModules(t, raw)

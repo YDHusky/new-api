@@ -4,6 +4,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -33,8 +34,18 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 	return filtered
 }
 
+func filterPricingByBillingConfig(pricing []model.Pricing) []model.Pricing {
+	filtered := make([]model.Pricing, 0, len(pricing))
+	for _, item := range pricing {
+		if billing_setting.HasModelBillingConfig(item.ModelName) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
 func GetPricing(c *gin.Context) {
-	pricing := model.GetPricing()
+	pricing := filterPricingByBillingConfig(model.GetPricing())
 	userId, exists := c.Get("id")
 	usableGroup := map[string]string{}
 	groupRatio := map[string]float64{}

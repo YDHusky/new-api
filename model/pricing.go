@@ -356,10 +356,6 @@ func updatePricing() {
 
 	pricingMap = make([]Pricing, 0)
 	for model, groups := range modelGroupsMap {
-		if !billing_setting.HasModelBillingConfig(model) {
-			continue
-		}
-
 		pricing := Pricing{
 			ModelName:              model,
 			EnableGroup:            groups.Items(),

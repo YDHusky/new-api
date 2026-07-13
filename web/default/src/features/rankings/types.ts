@@ -67,6 +67,16 @@ export type VendorRanking = {
   top_model: string
 }
 
+export type UserRanking = {
+  rank: number
+  previous_rank?: number
+  username: string
+  total_quota: number
+  total_tokens: number
+  share: number
+  growth_pct: number
+}
+
 export type RankingMover = {
   model_name: string
   vendor: string
@@ -135,4 +145,6 @@ export type RankingsSnapshot = {
   models_history: ModelHistorySeries
   /** 100%-stacked area history of token share by vendor over the period. */
   vendor_share_history: VendorShareSeries
+  /** User consumption ranking, returned for admins or when publicly enabled. */
+  users?: UserRanking[]
 }

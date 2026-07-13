@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 export type HeaderNavAccessConfig = {
   enabled: boolean
   requireAuth: boolean
+  userRankingEnabled?: boolean
 }
 
 export type HeaderNavModulesConfig = {
@@ -44,10 +45,12 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
   pricing: {
     enabled: true,
     requireAuth: false,
+    userRankingEnabled: false,
   },
   rankings: {
     enabled: true,
     requireAuth: false,
+    userRankingEnabled: false,
   },
   docs: true,
   about: true,
@@ -112,6 +115,7 @@ const parseAccessModule = (
     return {
       enabled: toBoolean(raw, fallback.enabled),
       requireAuth: fallback.requireAuth,
+      userRankingEnabled: fallback.userRankingEnabled ?? false,
     }
   }
   if (raw && typeof raw === 'object') {
@@ -119,6 +123,10 @@ const parseAccessModule = (
     return {
       enabled: toBoolean(record.enabled, fallback.enabled),
       requireAuth: toBoolean(record.requireAuth, fallback.requireAuth),
+      userRankingEnabled: toBoolean(
+        record.userRankingEnabled,
+        fallback.userRankingEnabled ?? false
+      ),
     }
   }
   return { ...fallback }

@@ -27,6 +27,7 @@ type RankingsResponse struct {
 	TopDroppers        []RankingMover     `json:"top_droppers"`
 	ModelsHistory      ModelHistorySeries `json:"models_history"`
 	VendorShareHistory VendorShareSeries  `json:"vendor_share_history"`
+	Users              []RankedUser       `json:"users,omitempty"`
 }
 
 type RankedModel struct {
@@ -50,6 +51,16 @@ type RankedVendor struct {
 	GrowthPct   float64 `json:"growth_pct"`
 	ModelsCount int     `json:"models_count"`
 	TopModel    string  `json:"top_model"`
+}
+
+type RankedUser struct {
+	Rank         int     `json:"rank"`
+	PreviousRank *int    `json:"previous_rank,omitempty"`
+	Username     string  `json:"username"`
+	TotalQuota   int64   `json:"total_quota"`
+	TotalTokens  int64   `json:"total_tokens"`
+	Share        float64 `json:"share"`
+	GrowthPct    float64 `json:"growth_pct"`
 }
 
 type RankingMover struct {
@@ -161,6 +172,27 @@ func GetRankingsSnapshot(period string) (*RankingsResponse, error) {
 	rankingCacheMu.Unlock()
 
 	return data, nil
+}
+
+func GetUserConsumptionRankings(period string) ([]RankedUser, error) {
+	config, err := rankingConfig(period)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	startTime, endTime := rankingTimeRange(config, now)
+	currentTotals, err := model.GetRankingUserTotals(startTime, endTime)
+	if err != nil {
+		return nil, err
+	}
+	previousStart, previousEnd := previousRankingTimeRange(config, startTime)
+	previousTotals, err := model.GetRankingUserTotals(previousStart, previousEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildRankedUsers(currentTotals, previousTotals), nil
 }
 
 func rankingConfig(period string) (rankingPeriodConfig, error) {
@@ -335,6 +367,39 @@ func buildRankedVendors(currentTotals []model.RankingQuotaTotal, previousTotals 
 		rows[idx].Rank = idx + 1
 	}
 	return rows
+}
+
+func buildRankedUsers(currentTotals []model.RankingUserTotal, previousTotals []model.RankingUserTotal) []RankedUser {
+	previousRanks := make(map[int]int, len(previousTotals))
+	previousQuota := make(map[int]int64, len(previousTotals))
+	for idx, item := range previousTotals {
+		previousRanks[item.UserID] = idx + 1
+		previousQuota[item.UserID] = item.TotalQuota
+	}
+
+	totalQuota := int64(0)
+	for _, item := range currentTotals {
+		totalQuota += item.TotalQuota
+	}
+
+	rows := make([]RankedUser, 0, len(currentTotals))
+	for idx, item := range currentTotals {
+		var previousRank *int
+		if rank, ok := previousRanks[item.UserID]; ok {
+			rankCopy := rank
+			previousRank = &rankCopy
+		}
+		rows = append(rows, RankedUser{
+			Rank:         idx + 1,
+			PreviousRank: previousRank,
+			Username:     item.Username,
+			TotalQuota:   item.TotalQuota,
+			TotalTokens:  item.TotalTokens,
+			Share:        rankingShare(item.TotalQuota, totalQuota),
+			GrowthPct:    rankingGrowthPct(item.TotalQuota, previousQuota[item.UserID]),
+		})
+	}
+	return limitRankedUsers(rows, rankingLeaderboardLimit)
 }
 
 func ensureVendorAggregate(aggregates map[string]*vendorAggregate, meta rankingModelMeta) *vendorAggregate {
@@ -576,6 +641,13 @@ func roundRankingFloat(value float64) float64 {
 }
 
 func limitRankedModels(rows []RankedModel, limit int) []RankedModel {
+	if limit <= 0 || len(rows) <= limit {
+		return rows
+	}
+	return rows[:limit]
+}
+
+func limitRankedUsers(rows []RankedUser, limit int) []RankedUser {
 	if limit <= 0 || len(rows) <= limit {
 		return rows
 	}

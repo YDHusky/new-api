@@ -55,6 +55,7 @@ const headerNavSchema = z.object({
   pricingRequireAuth: z.boolean(),
   rankingsEnabled: z.boolean(),
   rankingsRequireAuth: z.boolean(),
+  rankingsUserRankingEnabled: z.boolean(),
   docs: z.boolean(),
   about: z.boolean(),
 })
@@ -89,6 +90,10 @@ const toFormValues = (config: HeaderNavModulesConfig): HeaderNavFormValues => ({
     config.rankings?.requireAuth === undefined
       ? HEADER_NAV_DEFAULT.rankings.requireAuth
       : Boolean(config.rankings.requireAuth),
+  rankingsUserRankingEnabled:
+    config.rankings?.userRankingEnabled === undefined
+      ? Boolean(HEADER_NAV_DEFAULT.rankings.userRankingEnabled)
+      : Boolean(config.rankings.userRankingEnabled),
   docs:
     config.docs === undefined ? HEADER_NAV_DEFAULT.docs : Boolean(config.docs),
   about:
@@ -130,6 +135,7 @@ export function HeaderNavigationSection({
         ...(config.rankings ?? HEADER_NAV_DEFAULT.rankings),
         enabled: values.rankingsEnabled,
         requireAuth: values.rankingsRequireAuth,
+        userRankingEnabled: values.rankingsUserRankingEnabled,
       },
     }
 
@@ -183,6 +189,9 @@ export function HeaderNavigationSection({
     description: string
     requireAuthTitle: string
     requireAuthDescription: string
+    userRankingKey?: 'rankingsUserRankingEnabled'
+    userRankingTitle?: string
+    userRankingDescription?: string
   }> = [
     {
       enabledKey: 'pricingEnabled',
@@ -204,6 +213,11 @@ export function HeaderNavigationSection({
       requireAuthTitle: t('Require login to view rankings'),
       requireAuthDescription: t(
         'Visitors must authenticate before accessing the rankings page.'
+      ),
+      userRankingKey: 'rankingsUserRankingEnabled',
+      userRankingTitle: t('Expose user consumption ranking'),
+      userRankingDescription: t(
+        'Allow logged-in users to view the user consumption leaderboard.'
       ),
     },
   ]
@@ -291,6 +305,33 @@ export function HeaderNavigationSection({
                     </SettingsControlChildren>
                   )}
                 />
+
+                {module.userRankingKey && (
+                  <FormField
+                    control={form.control}
+                    name={module.userRankingKey}
+                    render={({ field }) => (
+                      <SettingsControlChildren>
+                        <SettingsSwitchItem className='py-2'>
+                          <SettingsSwitchContent>
+                            <FormLabel>{module.userRankingTitle}</FormLabel>
+                            <FormDescription>
+                              {module.userRankingDescription}
+                            </FormDescription>
+                          </SettingsSwitchContent>
+                          <FormControl>
+                            <Switch
+                              checked={field.value}
+                              onCheckedChange={field.onChange}
+                              disabled={!form.watch(module.requireAuthDependsOn)}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </SettingsSwitchItem>
+                      </SettingsControlChildren>
+                    )}
+                  />
+                )}
               </SettingsControlGroup>
             ))}
           </div>

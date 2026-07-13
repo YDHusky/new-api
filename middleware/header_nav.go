@@ -10,14 +10,16 @@ import (
 )
 
 type headerNavAccess struct {
-	Enabled     bool
-	RequireAuth bool
+	Enabled            bool
+	RequireAuth        bool
+	UserRankingEnabled bool
 }
 
 func getHeaderNavAccess(module string) headerNavAccess {
 	fallback := headerNavAccess{
-		Enabled:     true,
-		RequireAuth: false,
+		Enabled:            true,
+		RequireAuth:        false,
+		UserRankingEnabled: false,
 	}
 
 	common.OptionMapRWMutex.RLock()
@@ -40,18 +42,21 @@ func parseHeaderNavAccess(raw any, fallback headerNavAccess) headerNavAccess {
 	switch value := raw.(type) {
 	case bool:
 		return headerNavAccess{
-			Enabled:     value,
-			RequireAuth: fallback.RequireAuth,
+			Enabled:            value,
+			RequireAuth:        fallback.RequireAuth,
+			UserRankingEnabled: fallback.UserRankingEnabled,
 		}
 	case string:
 		return headerNavAccess{
-			Enabled:     parseHeaderNavBool(value, fallback.Enabled),
-			RequireAuth: fallback.RequireAuth,
+			Enabled:            parseHeaderNavBool(value, fallback.Enabled),
+			RequireAuth:        fallback.RequireAuth,
+			UserRankingEnabled: fallback.UserRankingEnabled,
 		}
 	case float64:
 		return headerNavAccess{
-			Enabled:     parseHeaderNavBool(value, fallback.Enabled),
-			RequireAuth: fallback.RequireAuth,
+			Enabled:            parseHeaderNavBool(value, fallback.Enabled),
+			RequireAuth:        fallback.RequireAuth,
+			UserRankingEnabled: fallback.UserRankingEnabled,
 		}
 	case map[string]any:
 		access := fallback
@@ -61,10 +66,19 @@ func parseHeaderNavAccess(raw any, fallback headerNavAccess) headerNavAccess {
 		if requireAuth, ok := value["requireAuth"]; ok {
 			access.RequireAuth = parseHeaderNavBool(requireAuth, fallback.RequireAuth)
 		}
+		if userRankingEnabled, ok := value["userRankingEnabled"]; ok {
+			access.UserRankingEnabled = parseHeaderNavBool(userRankingEnabled, fallback.UserRankingEnabled)
+		}
 		return access
 	default:
 		return fallback
 	}
+}
+
+// UserRankingEnabled reports whether logged-in non-admin users may view the
+// user consumption ranking. Administrators always retain access.
+func UserRankingEnabled() bool {
+	return getHeaderNavAccess("rankings").UserRankingEnabled
 }
 
 func parseHeaderNavBool(value any, fallback bool) bool {
