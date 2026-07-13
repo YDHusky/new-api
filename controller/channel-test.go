@@ -859,6 +859,9 @@ func TestChannel(c *gin.Context) {
 	}
 	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
 	if result.localErr != nil {
+		if err := model.RecordChannelStatusHistory(channel.Id, common.ChannelStatusAutoDisabled, time.Since(tik).Milliseconds(), time.Now().Unix()); err != nil {
+			common.SysLog(fmt.Sprintf("failed to record channel test history: channel_id=%d, error=%v", channel.Id, err))
+		}
 		resp := gin.H{
 			"success": false,
 			"message": result.localErr.Error(),
@@ -873,6 +876,13 @@ func TestChannel(c *gin.Context) {
 	tok := time.Now()
 	milliseconds := tok.Sub(tik).Milliseconds()
 	go channel.UpdateResponseTime(milliseconds)
+	historyStatus := common.ChannelStatusEnabled
+	if result.newAPIError != nil {
+		historyStatus = common.ChannelStatusAutoDisabled
+	}
+	if err := model.RecordChannelStatusHistory(channel.Id, historyStatus, milliseconds, tok.Unix()); err != nil {
+		common.SysLog(fmt.Sprintf("failed to record channel test history: channel_id=%d, error=%v", channel.Id, err))
+	}
 	consumedTime := float64(milliseconds) / 1000.0
 	if result.newAPIError != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -968,6 +978,13 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		}
 
 		channel.UpdateResponseTime(milliseconds)
+		historyStatus := common.ChannelStatusEnabled
+		if result.localErr != nil || result.newAPIError != nil {
+			historyStatus = common.ChannelStatusAutoDisabled
+		}
+		if err := model.RecordChannelStatusHistory(channel.Id, historyStatus, milliseconds, tok.Unix()); err != nil {
+			common.SysLog(fmt.Sprintf("failed to record channel test history: channel_id=%d, error=%v", channel.Id, err))
+		}
 		if common.RequestInterval > 0 {
 			if ctx == nil {
 				time.Sleep(common.RequestInterval)
