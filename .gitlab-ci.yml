@@ -1,0 +1,32 @@
+default:
+  tags:
+    - shared
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v.+/ && $CI_COMMIT_REF_PROTECTED == "true"'
+    - when: never
+
+stages:
+  - build-images
+
+.docker-cli-image: &docker_cli_image
+  name: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/docker:cli
+
+build-and-push-images:
+  stage: build-images
+  image: *docker_cli_image
+  variables:
+    CI_REGISTRY_IMAGE: "registry.yudream.online/new-api"
+    RELEASE_IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+    LATEST_IMAGE: "$CI_REGISTRY_IMAGE:latest"
+    GOPROXY: "https://goproxy.cn,direct"
+  before_script:
+    - docker info
+  script:
+    - printf '%s\n' "$CI_COMMIT_TAG" > VERSION
+    - docker build --pull --build-arg GOPROXY="$GOPROXY" -t "$RELEASE_IMAGE" -t "$LATEST_IMAGE" .
+    - docker push "$RELEASE_IMAGE"
+    - docker push "$LATEST_IMAGE"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v.+/ && $CI_COMMIT_REF_PROTECTED == "true"'
