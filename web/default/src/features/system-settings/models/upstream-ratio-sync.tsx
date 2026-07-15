@@ -31,6 +31,7 @@ import {
 } from '../api'
 import type {
   DifferencesMap,
+  RatioDifference,
   RatioType,
   UpstreamChannel,
   UpstreamConfig,
@@ -49,6 +50,15 @@ import {
   OPENROUTER_CHANNEL_TYPE,
   OPENROUTER_ENDPOINT,
 } from './constants'
+import {
+  Sub2apiImportDialog,
+  type Sub2apiImportConfig,
+} from './sub2api-import-dialog'
+import {
+  type GroupRatioResolution,
+  UpstreamGroupRatioSyncTable,
+} from './upstream-group-ratio-sync-table'
+import { UpstreamRatioAutoSync } from './upstream-ratio-auto-sync'
 import {
   NUMERIC_SYNC_FIELDS,
   RATIO_SYNC_FIELDS,
@@ -76,6 +86,8 @@ type UpstreamRatioSyncProps = {
     ImageRatio: string
     AudioRatio: string
     AudioCompletionRatio: string
+    GroupRatio: string
+    UserUsableGroups: string
     'billing_setting.billing_mode': string
     'billing_setting.billing_expr': string
   }
@@ -124,13 +136,20 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
   const queryClient = useQueryClient()
 
   const [channelDialogOpen, setChannelDialogOpen] = useState(false)
+  const [sub2apiDialogOpen, setSub2apiDialogOpen] = useState(false)
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false)
   const [selectedChannelIds, setSelectedChannelIds] = useState<number[]>([])
   const [channelEndpoints, setChannelEndpoints] = useState<
     Record<number, string>
   >({})
   const [differences, setDifferences] = useState<DifferencesMap>({})
+  const [groupDifferences, setGroupDifferences] = useState<
+    Record<string, RatioDifference>
+  >({})
   const [resolutions, setResolutions] = useState<ResolutionsMap>({})
+  const [groupResolutions, setGroupResolutions] = useState<
+    Record<string, GroupRatioResolution>
+  >({})
   const [conflictItems, setConflictItems] = useState<ConflictItem[]>([])
   const [confirmLoading, setConfirmLoading] = useState(false)
 
@@ -168,7 +187,7 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         return
       }
 
-      const { differences: diffs, test_results } = data.data
+      const { differences: diffs, group_differences, test_results } = data.data
 
       const errorResults = test_results.filter((r) => r.status === 'error')
       if (errorResults.length > 0) {
@@ -179,7 +198,9 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
       }
 
       setDifferences(diffs)
+      setGroupDifferences(group_differences)
       setResolutions({})
+      setGroupResolutions({})
 
       if (Object.keys(diffs).length === 0) {
         toast.success(t('No price differences found'))
@@ -218,6 +239,13 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
       })
 
       setResolutions({})
+      setGroupResolutions({})
+
+      setGroupDifferences((previous) => {
+        const next = { ...previous }
+        Object.keys(groupResolutions).forEach((group) => delete next[group])
+        return next
+      })
     },
     onError: (error: Error) => {
       toast.error(error.message || t('Failed to sync prices'))
@@ -228,7 +256,10 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
     setChannelDialogOpen(true)
   }
 
-  const handleConfirmChannelSelection = (selectedIds: number[]) => {
+  const handleConfirmChannelSelection = (
+    selectedIds: number[],
+    proxyURL: string
+  ) => {
     const selectedChannels = channels.filter((ch) =>
       selectedIds.includes(ch.id)
     )
@@ -245,7 +276,38 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
       endpoint: channelEndpoints[ch.id] || DEFAULT_ENDPOINT,
     }))
 
-    fetchMutation.mutate({ upstreams, timeout: 10 })
+    fetchMutation.mutate({
+      upstreams,
+      timeout: 10,
+      proxy_url: proxyURL,
+    })
+  }
+
+  const handleSub2apiImport = (config: Sub2apiImportConfig) => {
+    setSub2apiDialogOpen(false)
+    fetchMutation.mutate({
+      upstreams: [
+        {
+          id: 0,
+          name: 'sub2api',
+          base_url: config.baseURL,
+          endpoint: 'sub2api',
+          api_key: config.authMode === 'api-key' ? config.apiKey : undefined,
+          login_email:
+            config.authMode === 'account-login' ? config.loginEmail : undefined,
+          login_password:
+            config.authMode === 'account-login'
+              ? config.loginPassword
+              : undefined,
+          totp_code:
+            config.authMode === 'account-login' ? config.totpCode : undefined,
+          saved_account_id: config.savedAccountId || undefined,
+        },
+      ],
+      timeout: 10,
+      ratio_formula: config.ratioFormula,
+      proxy_url: config.proxyURL,
+    })
   }
 
   const handleSelectValue = useCallback(
@@ -289,6 +351,24 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
     setResolutions((prev) => applyResolutionRemovalPlan(prev, plan))
   }, [])
 
+  const handleSelectGroupRatio = useCallback(
+    (group: string, resolution: GroupRatioResolution) => {
+      setGroupResolutions((previous) => ({
+        ...previous,
+        [group]: resolution,
+      }))
+    },
+    []
+  )
+
+  const handleUnselectGroupRatio = useCallback((group: string) => {
+    setGroupResolutions((previous) => {
+      const next = { ...previous }
+      delete next[group]
+      return next
+    })
+  }, [])
+
   const parsedRatios = useMemo(() => {
     return {
       ModelRatio: parseJsonRecord<number>(modelRatios.ModelRatio),
@@ -300,6 +380,8 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
       AudioCompletionRatio: parseJsonRecord<number>(
         modelRatios.AudioCompletionRatio
       ),
+      GroupRatio: parseJsonRecord<number>(modelRatios.GroupRatio),
+      UserUsableGroups: parseJsonRecord<string>(modelRatios.UserUsableGroups),
       ModelPrice: parseJsonRecord<number>(modelRatios.ModelPrice),
       'billing_setting.billing_mode': parseJsonRecord<string>(
         modelRatios['billing_setting.billing_mode']
@@ -311,6 +393,17 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
   }, [modelRatios])
 
   type ParsedRatios = typeof parsedRatios
+
+  const localGroups = useMemo(
+    () =>
+      [
+        ...new Set([
+          ...Object.keys(parsedRatios.GroupRatio),
+          ...Object.keys(parsedRatios.UserUsableGroups),
+        ]),
+      ].sort((left, right) => left.localeCompare(right)),
+    [parsedRatios.GroupRatio, parsedRatios.UserUsableGroups]
+  )
 
   const getLocalBillingCategory = (
     model: string,
@@ -341,6 +434,7 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         ImageRatio: { ...currentRatios.ImageRatio },
         AudioRatio: { ...currentRatios.AudioRatio },
         AudioCompletionRatio: { ...currentRatios.AudioCompletionRatio },
+        GroupRatio: { ...currentRatios.GroupRatio },
         ModelPrice: { ...currentRatios.ModelPrice },
         'billing_setting.billing_mode': {
           ...currentRatios['billing_setting.billing_mode'],
@@ -378,6 +472,10 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         })
       })
 
+      Object.entries(groupResolutions).forEach(([group, resolution]) => {
+        finalRatios.GroupRatio[group] = resolution.value
+      })
+
       const updates = Object.entries(finalRatios).map(([key, value]) => ({
         key,
         value: JSON.stringify(value, null, 2),
@@ -390,7 +488,7 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         })
       })
     },
-    [resolutions, syncMutate]
+    [groupResolutions, resolutions, syncMutate]
   )
 
   const findSourceChannel = (
@@ -471,16 +569,26 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
     }
   }
 
-  const hasSelections = Object.keys(resolutions).length > 0
+  const hasSelections =
+    Object.keys(resolutions).length > 0 ||
+    Object.keys(groupResolutions).length > 0
   const isLoading = fetchMutation.isPending || isSyncPending || confirmLoading
 
   return (
-    <div className='flex h-full min-h-0 flex-col gap-4'>
+    <div className='flex flex-col gap-4'>
       <div className='flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
         <div className='flex flex-col gap-2 sm:flex-row'>
           <Button onClick={handleOpenChannelDialog} disabled={isLoading}>
             <RefreshCcw className='mr-2 h-4 w-4' />
             {t('Select Sync Channels')}
+          </Button>
+          <Button
+            variant='outline'
+            onClick={() => setSub2apiDialogOpen(true)}
+            disabled={isLoading}
+          >
+            <RefreshCcw className='mr-2 h-4 w-4' />
+            {t('Import from sub2api')}
           </Button>
           <Button
             variant='secondary'
@@ -496,7 +604,9 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         </div>
       </div>
 
-      <div className='min-h-0 flex-1'>
+      <UpstreamRatioAutoSync localGroups={localGroups} />
+
+      <div>
         <UpstreamRatioSyncTable
           differences={differences}
           resolutions={resolutions}
@@ -509,6 +619,17 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         />
       </div>
 
+      <div className='flex flex-col gap-3'>
+        <h2 className='text-base font-medium'>{t('Group ratios')}</h2>
+        <UpstreamGroupRatioSyncTable
+          differences={groupDifferences}
+          resolutions={groupResolutions}
+          isDisabled={isLoading}
+          onSelectValue={handleSelectGroupRatio}
+          onUnselectValue={handleUnselectGroupRatio}
+        />
+      </div>
+
       <ChannelSelectorDialog
         open={channelDialogOpen}
         onOpenChange={setChannelDialogOpen}
@@ -518,6 +639,13 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         channelEndpoints={channelEndpoints}
         onChannelEndpointsChange={setChannelEndpoints}
         onConfirm={handleConfirmChannelSelection}
+      />
+
+      <Sub2apiImportDialog
+        open={sub2apiDialogOpen}
+        onOpenChange={setSub2apiDialogOpen}
+        onImport={handleSub2apiImport}
+        isLoading={fetchMutation.isPending}
       />
 
       <ConflictConfirmDialog

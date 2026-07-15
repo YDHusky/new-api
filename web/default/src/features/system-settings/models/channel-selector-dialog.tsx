@@ -31,6 +31,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -57,7 +58,7 @@ type ChannelSelectorDialogProps = {
   onSelectedChannelIdsChange: (ids: number[]) => void
   channelEndpoints: Record<number, string>
   onChannelEndpointsChange: (endpoints: Record<number, string>) => void
-  onConfirm: (selectedIds: number[]) => void
+  onConfirm: (selectedIds: number[], proxyURL: string) => void
 }
 
 // Synthesized presets from `controller/ratio_sync.go` always carry stable
@@ -80,6 +81,7 @@ export function ChannelSelectorDialog({
 }: ChannelSelectorDialogProps) {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
+  const [proxyURL, setProxyURL] = useState('')
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
 
   useEffect(() => {
@@ -310,7 +312,7 @@ export function ChannelSelectorDialog({
     const selectedIds = selectedRows.map((row) => row.original.id)
     onSelectedChannelIdsChange(selectedIds)
     onOpenChange(false)
-    onConfirm(selectedIds)
+    onConfirm(selectedIds, proxyURL.trim())
   }
 
   return (
@@ -334,6 +336,19 @@ export function ChannelSelectorDialog({
       }
     >
       <div className='flex h-full min-h-0 flex-col gap-4 overflow-hidden'>
+        <div className='flex shrink-0 items-center gap-2'>
+          <Label htmlFor='upstream-sync-proxy-url' className='shrink-0'>
+            {t('Proxy URL (optional)')}
+          </Label>
+          <Input
+            id='upstream-sync-proxy-url'
+            value={proxyURL}
+            onChange={(event) => setProxyURL(event.target.value)}
+            placeholder='http://localhost:7897'
+            className='h-8 max-w-sm font-mono text-xs'
+          />
+        </div>
+
         <div className='flex shrink-0 items-center gap-2'>
           <div className='relative flex-1'>
             <Search className='text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2' />

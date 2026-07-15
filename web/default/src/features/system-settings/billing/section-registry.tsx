@@ -23,6 +23,7 @@ import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
+import { UpstreamRatioSync } from '../models/upstream-ratio-sync'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 
@@ -110,7 +111,31 @@ const BILLING_SECTIONS = [
         modelDefaults={getModelDefaults(settings)}
         groupDefaults={getGroupDefaults(settings)}
         toolPricesDefault={settings['tool_price_setting.prices']}
-        visibleTabs={['models', 'unset-models', 'tool-prices', 'upstream-sync']}
+        visibleTabs={['models', 'unset-models', 'tool-prices']}
+      />
+    ),
+  },
+  {
+    id: 'upstream-sync',
+    titleKey: 'Upstream price sync',
+    build: (settings: BillingSettings) => (
+      <UpstreamRatioSync
+        modelRatios={{
+          ModelPrice: settings.ModelPrice,
+          ModelRatio: settings.ModelRatio,
+          CompletionRatio: settings.CompletionRatio,
+          CacheRatio: settings.CacheRatio,
+          CreateCacheRatio: settings.CreateCacheRatio,
+          ImageRatio: settings.ImageRatio,
+          AudioRatio: settings.AudioRatio,
+          AudioCompletionRatio: settings.AudioCompletionRatio,
+          GroupRatio: settings.GroupRatio,
+          UserUsableGroups: settings.UserUsableGroups,
+          'billing_setting.billing_mode':
+            settings['billing_setting.billing_mode'],
+          'billing_setting.billing_expr':
+            settings['billing_setting.billing_expr'],
+        }}
       />
     ),
   },

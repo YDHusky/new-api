@@ -21,6 +21,7 @@ const (
 	SystemTaskTypeModelUpdate    = "model_update"
 	SystemTaskTypeMidjourneyPoll = "midjourney_poll"
 	SystemTaskTypeAsyncTaskPoll  = "async_task_poll"
+	SystemTaskTypeRatioSync      = "ratio_sync"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")
@@ -184,6 +185,18 @@ func ListSystemTasks(limit int) ([]*SystemTask, error) {
 	}
 	var tasks []*SystemTask
 	err := DB.Order("id desc").Limit(limit).Find(&tasks).Error
+	return tasks, err
+}
+
+func ListSystemTasksByType(taskType string, limit int) ([]*SystemTask, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var tasks []*SystemTask
+	err := DB.Where("type = ?", taskType).Order("id desc").Limit(limit).Find(&tasks).Error
 	return tasks, err
 }
 

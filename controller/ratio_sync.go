@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -23,26 +24,31 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/expr-lang/expr"
+	"github.com/expr-lang/expr/vm"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	defaultTimeoutSeconds       = 10
-	defaultEndpoint             = "/api/pricing"
-	maxConcurrentFetches        = 8
-	maxRatioConfigBytes         = 10 << 20 // 10MB
-	floatEpsilon                = 1e-9
-	officialRatioPresetID       = -100
-	officialRatioPresetName     = "官方倍率预设"
-	officialRatioPresetBaseURL  = "https://basellm.github.io"
-	modelsDevPresetID           = -101
-	modelsDevPresetName         = "models.dev 价格预设"
-	modelsDevPresetBaseURL      = "https://models.dev"
-	modelsDevHost               = "models.dev"
-	modelsDevPath               = "/api.json"
-	modelsDevInputCostRatioBase = 1000.0
+	defaultTimeoutSeconds        = 10
+	defaultEndpoint              = "/api/pricing"
+	maxConcurrentFetches         = 8
+	maxRatioConfigBytes          = 10 << 20 // 10MB
+	floatEpsilon                 = 1e-9
+	officialRatioPresetID        = -100
+	officialRatioPresetName      = "官方倍率预设"
+	officialRatioPresetBaseURL   = "https://basellm.github.io"
+	modelsDevPresetID            = -101
+	modelsDevPresetName          = "models.dev 价格预设"
+	modelsDevPresetBaseURL       = "https://models.dev"
+	modelsDevHost                = "models.dev"
+	modelsDevPath                = "/api.json"
+	modelsDevInputCostRatioBase  = 1000.0
+	sub2APIEndpoint              = "sub2api"
+	sub2APIAvailableChannelsPath = "/api/v1/channels/available"
+	maxRatioFormulaLength        = 256
 )
 
 func nearlyEqual(a, b float64) bool {
@@ -131,11 +137,70 @@ func normalizeSyncValue(field string, value any) any {
 	return value
 }
 
+func compileRatioFormula(raw string) (*vm.Program, error) {
+	formula := strings.TrimSpace(raw)
+	if formula == "" {
+		return nil, nil
+	}
+	if len(formula) > maxRatioFormulaLength {
+		return nil, fmt.Errorf("ratio formula exceeds %d characters", maxRatioFormulaLength)
+	}
+
+	// `value` is the imported model or group ratio. Accept the Chinese name
+	// used in the UI example as a convenience.
+	formula = strings.ReplaceAll(formula, "倍率", "value")
+	formula = strings.ReplaceAll(formula, "ratio", "value")
+	program, err := expr.Compile(formula, expr.Env(map[string]float64{"value": 0}), expr.AsFloat64())
+	if err != nil {
+		return nil, fmt.Errorf("invalid ratio formula: %w", err)
+	}
+	return program, nil
+}
+
+func parseSyncProxyURL(raw string) (*url.URL, error) {
+	proxyURL := strings.TrimSpace(raw)
+	if proxyURL == "" {
+		return nil, nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, errors.New("proxy URL must use http or https and include a host")
+	}
+	return parsed, nil
+}
+
+func applyRatioFormula(data map[string]any, program *vm.Program) error {
+	if program == nil {
+		return nil
+	}
+
+	for _, field := range []string{"model_ratio", "group_ratio"} {
+		ratios := valueMap(data[field])
+		for name, rawValue := range ratios {
+			value, ok := asFloat64(rawValue)
+			if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+				return fmt.Errorf("invalid %s for %s", strings.ReplaceAll(field, "_", " "), name)
+			}
+			result, err := expr.Run(program, map[string]float64{"value": value})
+			if err != nil {
+				return fmt.Errorf("apply ratio formula to %s: %w", name, err)
+			}
+			adjusted, ok := result.(float64)
+			if !ok || math.IsNaN(adjusted) || math.IsInf(adjusted, 0) || adjusted < 0 {
+				return fmt.Errorf("ratio formula result for %s must be a non-negative finite number", name)
+			}
+			ratios[name] = roundRatioValue(adjusted)
+		}
+	}
+	return nil
+}
+
 func getLocalPricingSyncData() map[string]any {
 	data := billing_setting.GetPricingSyncData(map[string]any(ratio_setting.GetExposedData()))
 	data["image_ratio"] = ratio_setting.GetImageRatioCopy()
 	data["audio_ratio"] = ratio_setting.GetAudioRatioCopy()
 	data["audio_completion_ratio"] = ratio_setting.GetAudioCompletionRatioCopy()
+	data["group_ratio"] = valueMap(ratio_setting.GetGroupRatioCopy())
 	return data
 }
 
@@ -150,11 +215,47 @@ func FetchUpstreamRatios(c *gin.Context) {
 	if req.Timeout <= 0 {
 		req.Timeout = defaultTimeoutSeconds
 	}
-
+	formulaProgram, err := compileRatioFormula(req.RatioFormula)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	var upstreams []dto.UpstreamDTO
 
 	if len(req.Upstreams) > 0 {
+		accountsByID := make(map[string]ratioSyncAccount)
+		for _, upstream := range req.Upstreams {
+			if upstream.SavedAccountID == "" {
+				continue
+			}
+			savedAccounts, err := loadRatioSyncAccounts()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to load saved sync accounts"})
+				return
+			}
+			accountsByID = make(map[string]ratioSyncAccount, len(savedAccounts))
+			for _, account := range savedAccounts {
+				accountsByID[account.ID] = account
+			}
+			break
+		}
 		for _, u := range req.Upstreams {
+			if u.SavedAccountID != "" {
+				account, ok := accountsByID[u.SavedAccountID]
+				if !ok {
+					c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "saved sync account not found"})
+					return
+				}
+				u.Name = account.Name
+				u.BaseURL = account.BaseURL
+				u.Endpoint = sub2APIEndpoint
+				u.APIKey = account.APIKey
+				u.LoginEmail = account.LoginEmail
+				u.LoginPassword = account.LoginPassword
+				if req.ProxyURL == "" {
+					req.ProxyURL = account.ProxyURL
+				}
+			}
 			if strings.HasPrefix(u.BaseURL, "http") {
 				if u.Endpoint == "" {
 					u.Endpoint = defaultEndpoint
@@ -190,6 +291,11 @@ func FetchUpstreamRatios(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "无有效上游渠道"})
 		return
 	}
+	proxyURL, err := parseSyncProxyURL(req.ProxyURL)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 
 	var wg sync.WaitGroup
 	ch := make(chan upstreamResult, len(upstreams))
@@ -197,7 +303,7 @@ func FetchUpstreamRatios(c *gin.Context) {
 	sem := make(chan struct{}, maxConcurrentFetches)
 
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	transport := &http.Transport{MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ExpectContinueTimeout: 1 * time.Second, ResponseHeaderTimeout: 10 * time.Second}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ExpectContinueTimeout: 1 * time.Second, ResponseHeaderTimeout: 10 * time.Second}
 	if common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig
 	}
@@ -226,11 +332,14 @@ func FetchUpstreamRatios(c *gin.Context) {
 			defer func() { <-sem }()
 
 			isOpenRouter := chItem.Endpoint == "openrouter"
+			isSub2API := chItem.Endpoint == sub2APIEndpoint
 
 			endpoint := chItem.Endpoint
 			var fullURL string
 			if isOpenRouter {
 				fullURL = chItem.BaseURL + "/v1/models"
+			} else if isSub2API {
+				fullURL = sub2APIAvailableChannelsURL(chItem.BaseURL)
 			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
 				fullURL = endpoint
 			} else {
@@ -278,6 +387,28 @@ func FetchUpstreamRatios(c *gin.Context) {
 			} else if isOpenRouter {
 				ch <- upstreamResult{Name: uniqueName, Err: "OpenRouter requires a valid channel with API key"}
 				return
+			}
+			if isSub2API {
+				authToken := strings.TrimSpace(chItem.APIKey)
+				if authToken == "" {
+					if strings.TrimSpace(chItem.LoginEmail) == "" || chItem.LoginPassword == "" {
+						ch <- upstreamResult{Name: uniqueName, Err: "sub2api requires an API key or account email and password"}
+						return
+					}
+					authToken, err = loginSub2API(
+						ctx,
+						client,
+						chItem.BaseURL,
+						chItem.LoginEmail,
+						chItem.LoginPassword,
+						chItem.TOTPCode,
+					)
+					if err != nil {
+						ch <- upstreamResult{Name: uniqueName, Err: err.Error()}
+						return
+					}
+				}
+				httpReq.Header.Set("Authorization", "Bearer "+authToken)
 			}
 
 			// 简单重试：最多 3 次，指数退避
@@ -335,6 +466,29 @@ func FetchUpstreamRatios(c *gin.Context) {
 					return
 				}
 				ch <- upstreamResult{Name: uniqueName, Data: converted}
+				return
+			}
+
+			if isSub2API {
+				convertedSources, err := convertSub2APIToRatioData(bytes.NewReader(bodyBytes))
+				if err != nil {
+					logger.LogWarn(c.Request.Context(), "sub2api parse failed from "+chItem.Name+": "+err.Error())
+					ch <- upstreamResult{Name: uniqueName, Err: err.Error()}
+					return
+				}
+				sourceNames := make([]string, 0, len(convertedSources))
+				for sourceName := range convertedSources {
+					sourceNames = append(sourceNames, sourceName)
+				}
+				sort.Strings(sourceNames)
+				for _, sourceName := range sourceNames {
+					converted := convertedSources[sourceName]
+					if err := applyRatioFormula(converted, formulaProgram); err != nil {
+						ch <- upstreamResult{Name: uniqueName, Err: err.Error()}
+						return
+					}
+					ch <- upstreamResult{Name: uniqueName + " / " + sourceName, Data: converted}
+				}
 				return
 			}
 
@@ -492,8 +646,10 @@ func FetchUpstreamRatios(c *gin.Context) {
 		}(chn)
 	}
 
-	wg.Wait()
-	close(ch)
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
 
 	localData := getLocalPricingSyncData()
 
@@ -523,14 +679,76 @@ func FetchUpstreamRatios(c *gin.Context) {
 	}
 
 	differences := buildDifferences(localData, successfulChannels)
+	groupDifferences := buildGroupDifferences(localData, successfulChannels)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"differences":  differences,
-			"test_results": testResults,
+			"differences":       differences,
+			"group_differences": groupDifferences,
+			"test_results":      testResults,
 		},
 	})
+}
+
+func buildGroupDifferences(localData map[string]any, successfulChannels []struct {
+	name string
+	data map[string]any
+}) map[string]dto.DifferenceItem {
+	differences := make(map[string]dto.DifferenceItem)
+	groupNames := make(map[string]struct{})
+
+	for groupName := range valueMap(localData["group_ratio"]) {
+		groupNames[groupName] = struct{}{}
+	}
+	for _, channel := range successfulChannels {
+		for groupName := range valueMap(channel.data["group_ratio"]) {
+			groupNames[groupName] = struct{}{}
+		}
+	}
+
+	for groupName := range groupNames {
+		var localValue interface{}
+		if value, ok := valueMap(localData["group_ratio"])[groupName]; ok {
+			localValue = normalizeSyncValue("model_ratio", value)
+		}
+
+		upstreamValues := make(map[string]interface{})
+		confidenceValues := make(map[string]bool)
+		hasUpstreamValue := false
+		hasDifference := false
+		for _, channel := range successfulChannels {
+			var upstreamValue interface{}
+			if value, ok := valueMap(channel.data["group_ratio"])[groupName]; ok {
+				upstreamValue = normalizeSyncValue("model_ratio", value)
+				hasUpstreamValue = true
+				if localValue != nil && !valuesEqual(localValue, upstreamValue) {
+					hasDifference = true
+				} else if valuesEqual(localValue, upstreamValue) {
+					upstreamValue = "same"
+				}
+			}
+			if upstreamValue == nil && localValue == nil {
+				upstreamValue = "same"
+			}
+			if localValue == nil && upstreamValue != nil && upstreamValue != "same" {
+				hasDifference = true
+			}
+			upstreamValues[channel.name] = upstreamValue
+			confidenceValues[channel.name] = true
+		}
+
+		if (!hasDifference && localValue != nil) || (!hasUpstreamValue && localValue == nil) {
+			continue
+		}
+		differences[groupName] = dto.DifferenceItem{
+			Current:    localValue,
+			Upstreams:  upstreamValues,
+			Confidence: confidenceValues,
+		}
+	}
+
+	return differences
 }
 
 func buildDifferences(localData map[string]any, successfulChannels []struct {
@@ -712,6 +930,323 @@ func isModelsDevAPIEndpoint(rawURL string) bool {
 		path = "/"
 	}
 	return path == modelsDevPath
+}
+
+func sub2APIAvailableChannelsURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if strings.HasSuffix(baseURL, "/api/v1") {
+		return baseURL + "/channels/available"
+	}
+	return baseURL + sub2APIAvailableChannelsPath
+}
+
+func sub2APILoginURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if strings.HasSuffix(baseURL, "/api/v1") {
+		return baseURL + "/auth/login"
+	}
+	return baseURL + "/api/v1/auth/login"
+}
+
+type sub2APILoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type sub2APILoginResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		AccessToken string `json:"access_token"`
+		Requires2FA bool   `json:"requires_2fa"`
+		TempToken   string `json:"temp_token"`
+	} `json:"data"`
+}
+
+type sub2APILogin2FARequest struct {
+	TempToken string `json:"temp_token"`
+	TOTPCode  string `json:"totp_code"`
+}
+
+func loginSub2API(ctx context.Context, client *http.Client, baseURL, email, password, totpCode string) (string, error) {
+	payload, err := common.Marshal(sub2APILoginRequest{
+		Email:    strings.TrimSpace(email),
+		Password: password,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode sub2api login request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sub2APILoginURL(baseURL), bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("build sub2api login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("sub2api login request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var errorResponse struct {
+			Message string `json:"message"`
+		}
+		if err := common.DecodeJson(io.LimitReader(resp.Body, maxRatioConfigBytes), &errorResponse); err == nil && strings.TrimSpace(errorResponse.Message) != "" {
+			return "", fmt.Errorf("sub2api login failed: %s", errorResponse.Message)
+		}
+		return "", fmt.Errorf("sub2api login failed: %s", resp.Status)
+	}
+
+	var result sub2APILoginResponse
+	if err := common.DecodeJson(io.LimitReader(resp.Body, maxRatioConfigBytes), &result); err != nil {
+		return "", fmt.Errorf("decode sub2api login response: %w", err)
+	}
+	if result.Code != 0 {
+		return "", fmt.Errorf("sub2api login failed: %s", result.Message)
+	}
+	if result.Data.Requires2FA {
+		if strings.TrimSpace(totpCode) == "" {
+			return "", errors.New("sub2api login requires a two-factor code")
+		}
+		payload, err := common.Marshal(sub2APILogin2FARequest{
+			TempToken: result.Data.TempToken,
+			TOTPCode:  strings.TrimSpace(totpCode),
+		})
+		if err != nil {
+			return "", fmt.Errorf("encode sub2api two-factor request: %w", err)
+		}
+		request, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			sub2APILoginURL(baseURL)+"/2fa",
+			bytes.NewReader(payload),
+		)
+		if err != nil {
+			return "", fmt.Errorf("build sub2api two-factor request: %w", err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil {
+			return "", fmt.Errorf("sub2api two-factor request failed: %w", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("sub2api two-factor login failed: %s", response.Status)
+		}
+		if err := common.DecodeJson(io.LimitReader(response.Body, maxRatioConfigBytes), &result); err != nil {
+			return "", fmt.Errorf("decode sub2api two-factor response: %w", err)
+		}
+		if result.Code != 0 {
+			return "", fmt.Errorf("sub2api two-factor login failed: %s", result.Message)
+		}
+	}
+	if strings.TrimSpace(result.Data.AccessToken) == "" {
+		return "", errors.New("sub2api login returned no access token")
+	}
+	return result.Data.AccessToken, nil
+}
+
+type sub2APIAvailableResponse struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+}
+
+type sub2APIAvailableChannel struct {
+	Name      string                   `json:"name"`
+	Platforms []sub2APIPlatformSection `json:"platforms"`
+}
+
+type sub2APIPlatformSection struct {
+	Platform        string                  `json:"platform"`
+	Groups          []sub2APIGroup          `json:"groups"`
+	SupportedModels []sub2APISupportedModel `json:"supported_models"`
+}
+
+type sub2APIGroup struct {
+	Name           string  `json:"name"`
+	RateMultiplier float64 `json:"rate_multiplier"`
+}
+
+type sub2APISupportedModel struct {
+	Name    string               `json:"name"`
+	Pricing *sub2APIModelPricing `json:"pricing"`
+}
+
+type sub2APIModelPricing struct {
+	InputPrice      *float64                 `json:"input_price"`
+	OutputPrice     *float64                 `json:"output_price"`
+	CacheWritePrice *float64                 `json:"cache_write_price"`
+	CacheReadPrice  *float64                 `json:"cache_read_price"`
+	PerRequestPrice *float64                 `json:"per_request_price"`
+	Intervals       []sub2APIPricingInterval `json:"intervals"`
+}
+
+type sub2APIPricingInterval struct {
+	MinTokens       int      `json:"min_tokens"`
+	InputPrice      *float64 `json:"input_price"`
+	OutputPrice     *float64 `json:"output_price"`
+	CacheWritePrice *float64 `json:"cache_write_price"`
+	CacheReadPrice  *float64 `json:"cache_read_price"`
+	PerRequestPrice *float64 `json:"per_request_price"`
+}
+
+type sub2APIResolvedPricing struct {
+	input      *float64
+	output     *float64
+	cacheWrite *float64
+	cacheRead  *float64
+	perRequest *float64
+}
+
+func resolveSub2APIPricing(pricing *sub2APIModelPricing) sub2APIResolvedPricing {
+	if pricing == nil {
+		return sub2APIResolvedPricing{}
+	}
+
+	resolved := sub2APIResolvedPricing{
+		input:      pricing.InputPrice,
+		output:     pricing.OutputPrice,
+		cacheWrite: pricing.CacheWritePrice,
+		cacheRead:  pricing.CacheReadPrice,
+		perRequest: pricing.PerRequestPrice,
+	}
+	if len(pricing.Intervals) == 0 {
+		return resolved
+	}
+
+	intervals := append([]sub2APIPricingInterval(nil), pricing.Intervals...)
+	sort.SliceStable(intervals, func(i, j int) bool {
+		return intervals[i].MinTokens < intervals[j].MinTokens
+	})
+	base := intervals[0]
+	if resolved.input == nil {
+		resolved.input = base.InputPrice
+	}
+	if resolved.output == nil {
+		resolved.output = base.OutputPrice
+	}
+	if resolved.cacheWrite == nil {
+		resolved.cacheWrite = base.CacheWritePrice
+	}
+	if resolved.cacheRead == nil {
+		resolved.cacheRead = base.CacheReadPrice
+	}
+	if resolved.perRequest == nil {
+		resolved.perRequest = base.PerRequestPrice
+	}
+	return resolved
+}
+
+func validSub2APIPrice(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
+}
+
+func sub2APIRatioData() map[string]any {
+	return map[string]any{
+		"model_ratio":        map[string]any{},
+		"completion_ratio":   map[string]any{},
+		"cache_ratio":        map[string]any{},
+		"create_cache_ratio": map[string]any{},
+		"model_price":        map[string]any{},
+		"group_ratio":        map[string]any{},
+		"supported_models":   []string{},
+	}
+}
+
+func hasSub2APIRatioData(data map[string]any) bool {
+	for _, field := range []string{"model_ratio", "model_price", "group_ratio"} {
+		if len(valueMap(data[field])) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// convertSub2APIToRatioData converts the public available-channels response
+// into one selectable source per channel/platform/group. Model prices stay at
+// their source base rate; the group rate is returned separately so importing
+// both into new-api does not multiply the same group rate twice.
+func convertSub2APIToRatioData(reader io.Reader) (map[string]map[string]any, error) {
+	var response sub2APIAvailableResponse
+	if err := common.DecodeJson(reader, &response); err != nil {
+		return nil, fmt.Errorf("failed to decode sub2api response: %w", err)
+	}
+	if response.Code != 0 {
+		return nil, fmt.Errorf("sub2api request failed: %s", response.Message)
+	}
+
+	var channels []sub2APIAvailableChannel
+	if err := common.Unmarshal(response.Data, &channels); err != nil {
+		return nil, fmt.Errorf("failed to decode sub2api channel data: %w", err)
+	}
+
+	sources := make(map[string]map[string]any)
+	for _, channel := range channels {
+		for _, section := range channel.Platforms {
+			for _, group := range section.Groups {
+				groupName := strings.TrimSpace(group.Name)
+				if groupName == "" || !validSub2APIPrice(group.RateMultiplier) {
+					continue
+				}
+				sourceName := fmt.Sprintf("%s / %s / %s", channel.Name, section.Platform, groupName)
+				data := sub2APIRatioData()
+				modelRatios := valueMap(data["model_ratio"])
+				completionRatios := valueMap(data["completion_ratio"])
+				cacheRatios := valueMap(data["cache_ratio"])
+				createCacheRatios := valueMap(data["create_cache_ratio"])
+				modelPrices := valueMap(data["model_price"])
+				groupRatios := valueMap(data["group_ratio"])
+				groupRatios[groupName] = group.RateMultiplier
+				supportedModels := make([]string, 0, len(section.SupportedModels))
+
+				for _, model := range section.SupportedModels {
+					modelName := strings.TrimSpace(model.Name)
+					if modelName == "" {
+						continue
+					}
+					supportedModels = append(supportedModels, modelName)
+					pricing := resolveSub2APIPricing(model.Pricing)
+					if pricing.input != nil && validSub2APIPrice(*pricing.input) {
+						inputPrice := *pricing.input
+						if inputPrice == 0 {
+							if pricing.output == nil || *pricing.output == 0 {
+								modelRatios[modelName] = 0.0
+							}
+							continue
+						}
+						modelRatios[modelName] = roundRatioValue(inputPrice * 1000 * ratio_setting.USD)
+
+						if pricing.output != nil && validSub2APIPrice(*pricing.output) {
+							completionRatios[modelName] = roundRatioValue(*pricing.output / *pricing.input)
+						}
+						if pricing.cacheRead != nil && validSub2APIPrice(*pricing.cacheRead) {
+							cacheRatios[modelName] = roundRatioValue(*pricing.cacheRead / *pricing.input)
+						}
+						if pricing.cacheWrite != nil && validSub2APIPrice(*pricing.cacheWrite) {
+							createCacheRatios[modelName] = roundRatioValue(*pricing.cacheWrite / *pricing.input)
+						}
+						continue
+					}
+
+					if pricing.perRequest != nil && validSub2APIPrice(*pricing.perRequest) {
+						modelPrices[modelName] = roundRatioValue(*pricing.perRequest)
+					}
+				}
+				sort.Strings(supportedModels)
+				data["supported_models"] = supportedModels
+
+				if hasSub2APIRatioData(data) {
+					sources[sourceName] = data
+				}
+			}
+		}
+	}
+	if len(sources) == 0 {
+		return nil, errors.New("sub2api returned no importable model pricing")
+	}
+	return sources, nil
 }
 
 // convertOpenRouterToRatioData parses OpenRouter's /v1/models response and converts

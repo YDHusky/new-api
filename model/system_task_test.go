@@ -89,6 +89,28 @@ func TestSystemTaskActiveKeyPreventsDuplicateActiveRun(t *testing.T) {
 	assert.Equal(t, task.TaskID, activeTask.TaskID)
 }
 
+func TestListSystemTasksByTypeReturnsOnlyRequestedTaskType(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.Create(&SystemTask{
+		TaskID: "ratio-new", Type: SystemTaskTypeRatioSync,
+		Status: SystemTaskStatusSucceeded, CreatedAt: 20, UpdatedAt: 20,
+	}).Error)
+	require.NoError(t, DB.Create(&SystemTask{
+		TaskID: "cleanup", Type: SystemTaskTypeLogCleanup,
+		Status: SystemTaskStatusSucceeded, CreatedAt: 30, UpdatedAt: 30,
+	}).Error)
+	require.NoError(t, DB.Create(&SystemTask{
+		TaskID: "ratio-old", Type: SystemTaskTypeRatioSync,
+		Status: SystemTaskStatusFailed, CreatedAt: 10, UpdatedAt: 10,
+	}).Error)
+
+	tasks, err := ListSystemTasksByType(SystemTaskTypeRatioSync, 10)
+	require.NoError(t, err)
+	require.Len(t, tasks, 2)
+	assert.Equal(t, "ratio-old", tasks[0].TaskID)
+	assert.Equal(t, "ratio-new", tasks[1].TaskID)
+}
+
 func TestSystemTaskLockPreventsConcurrentClaim(t *testing.T) {
 	truncateTables(t)
 

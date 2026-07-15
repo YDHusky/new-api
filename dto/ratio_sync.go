@@ -1,16 +1,23 @@
 package dto
 
 type UpstreamDTO struct {
-	ID       int    `json:"id,omitempty"`
-	Name     string `json:"name" binding:"required"`
-	BaseURL  string `json:"base_url" binding:"required"`
-	Endpoint string `json:"endpoint"`
+	ID             int    `json:"id,omitempty"`
+	Name           string `json:"name" binding:"required"`
+	BaseURL        string `json:"base_url" binding:"required"`
+	Endpoint       string `json:"endpoint"`
+	APIKey         string `json:"api_key,omitempty"`
+	LoginEmail     string `json:"login_email,omitempty"`
+	LoginPassword  string `json:"login_password,omitempty"`
+	TOTPCode       string `json:"totp_code,omitempty"`
+	SavedAccountID string `json:"saved_account_id,omitempty"`
 }
 
 type UpstreamRequest struct {
-	ChannelIDs []int64       `json:"channel_ids"`
-	Upstreams  []UpstreamDTO `json:"upstreams"`
-	Timeout    int           `json:"timeout"`
+	ChannelIDs   []int64       `json:"channel_ids"`
+	Upstreams    []UpstreamDTO `json:"upstreams"`
+	Timeout      int           `json:"timeout"`
+	RatioFormula string        `json:"ratio_formula,omitempty"`
+	ProxyURL     string        `json:"proxy_url,omitempty"`
 }
 
 // TestResult 上游测试连通性结果

@@ -20,6 +20,7 @@ import { api } from '@/lib/api'
 
 import type {
   ConfirmPaymentComplianceResponse,
+  CreateRatioSyncAccountRequest,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
   SystemOptionsResponse,
@@ -27,6 +28,13 @@ import type {
   SystemTaskResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
+  RatioSyncAccountResponse,
+  RatioSyncAccountsResponse,
+  RatioSyncAutoConfig,
+  RatioSyncAutoConfigResponse,
+  RatioSyncLogsResponse,
+  RatioSyncRemoteKeysResponse,
+  RatioSyncTaskResponse,
   UpstreamChannelsResponse,
   UpstreamRatiosResponse,
 } from './types'
@@ -103,5 +111,76 @@ export async function fetchUpstreamRatios(request: FetchUpstreamRatiosRequest) {
     '/api/ratio_sync/fetch',
     request
   )
+  return res.data
+}
+
+export async function getRatioSyncAccounts() {
+  const res = await api.get<RatioSyncAccountsResponse>(
+    '/api/ratio_sync/accounts'
+  )
+  return res.data
+}
+
+export async function createRatioSyncAccount(
+  request: CreateRatioSyncAccountRequest
+) {
+  const res = await api.post<RatioSyncAccountResponse>(
+    '/api/ratio_sync/accounts',
+    request
+  )
+  return res.data
+}
+
+export async function updateRatioSyncAccount(
+  id: string,
+  request: CreateRatioSyncAccountRequest
+) {
+  const res = await api.put<RatioSyncAccountResponse>(
+    `/api/ratio_sync/accounts/${id}`,
+    request
+  )
+  return res.data
+}
+
+export async function deleteRatioSyncAccount(id: string) {
+  const res = await api.delete<UpdateOptionResponse>(
+    `/api/ratio_sync/accounts/${id}`
+  )
+  return res.data
+}
+
+export async function getRatioSyncAutoConfig() {
+  const res = await api.get<RatioSyncAutoConfigResponse>(
+    '/api/ratio_sync/auto-sync'
+  )
+  return res.data
+}
+
+export async function updateRatioSyncAutoConfig(config: RatioSyncAutoConfig) {
+  const res = await api.put<RatioSyncAutoConfigResponse>(
+    '/api/ratio_sync/auto-sync',
+    config
+  )
+  return res.data
+}
+
+export async function getRatioSyncAccountKeys(accountId: string) {
+  const res = await api.get<RatioSyncRemoteKeysResponse>(
+    `/api/ratio_sync/accounts/${accountId}/keys`
+  )
+  return res.data
+}
+
+export async function runRatioSyncNow() {
+  const res = await api.post<RatioSyncTaskResponse>(
+    '/api/ratio_sync/auto-sync/run'
+  )
+  return res.data
+}
+
+export async function getRatioSyncLogs(limit = 5) {
+  const res = await api.get<RatioSyncLogsResponse>('/api/ratio_sync/logs', {
+    params: { limit },
+  })
   return res.data
 }

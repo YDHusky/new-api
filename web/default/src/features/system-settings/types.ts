@@ -424,11 +424,118 @@ export type UpstreamConfig = {
   name: string
   base_url: string
   endpoint: string
+  api_key?: string
+  login_email?: string
+  login_password?: string
+  totp_code?: string
+  saved_account_id?: string
+}
+
+export type RatioSyncAccount = {
+  id: string
+  name: string
+  base_url: string
+  auth_mode: 'api-key' | 'account-login'
+  login_email?: string
+  proxy_url?: string
+  ratio_formula?: string
+}
+
+export type RatioSyncAccountsResponse = {
+  success: boolean
+  message: string
+  data: RatioSyncAccount[]
+}
+
+export type CreateRatioSyncAccountRequest = {
+  name: string
+  base_url: string
+  auth_mode: 'api-key' | 'account-login'
+  api_key?: string
+  login_email?: string
+  login_password?: string
+  proxy_url?: string
+  ratio_formula?: string
+}
+
+export type RatioSyncAccountResponse = {
+  success: boolean
+  message: string
+  data: RatioSyncAccount
+}
+
+export type RatioSyncTaskPayload = {
+  trigger: 'manual' | 'automatic'
+}
+
+export type RatioSyncRunSummary = {
+  trigger: 'manual' | 'automatic'
+  account_id: string
+  account_name: string
+  mapping_count: number
+  updated_models: number
+  updated_groups: number
+  started_at: number
+  finished_at: number
+  duration_ms: number
+}
+
+export type RatioSyncLog = SystemTask<
+  RatioSyncTaskPayload,
+  Record<string, never>,
+  RatioSyncRunSummary
+>
+
+export type RatioSyncTaskResponse = SystemTaskResponse<RatioSyncLog> & {
+  created: boolean
+}
+
+export type RatioSyncLogsResponse = {
+  success: boolean
+  message: string
+  data: RatioSyncLog[]
+}
+
+export type RatioSyncAutoConfig = {
+  enabled: boolean
+  account_id: string
+  interval_minutes: number
+  key_mappings: RatioSyncKeyMapping[]
+}
+
+export type RatioSyncKeyMapping = {
+  key_id: number
+  group_name: string
+}
+
+export type RatioSyncAutoConfigResponse = {
+  success: boolean
+  message: string
+  data: RatioSyncAutoConfig
+}
+
+export type RatioSyncRemoteKey = {
+  id: number
+  name: string
+  masked_key: string
+  status: string
+  group_name: string
+  group_platform: string
+  group_ratio: number
+  expired: boolean
+}
+
+export type RatioSyncRemoteKeysResponse = {
+  success: boolean
+  message: string
+  data: RatioSyncRemoteKey[]
 }
 
 export type FetchUpstreamRatiosRequest = {
   upstreams: UpstreamConfig[]
   timeout: number
+  ratio_formula?: string
+  proxy_url?: string
 }
 
 export type TestResult = {
@@ -442,6 +549,7 @@ export type UpstreamRatiosResponse = {
   message: string
   data: {
     differences: DifferencesMap
+    group_differences: Record<string, RatioDifference>
     test_results: TestResult[]
   }
 }

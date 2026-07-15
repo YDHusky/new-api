@@ -27,6 +27,15 @@ func AllOption() ([]*Option, error) {
 	return options, err
 }
 
+func GetOptionValue(key string) (string, error) {
+	var option Option
+	err := DB.Where(commonKeyCol+" = ?", key).First(&option).Error
+	if err != nil {
+		return "", err
+	}
+	return option.Value, nil
+}
+
 func InitOptionMap() {
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = make(map[string]string)

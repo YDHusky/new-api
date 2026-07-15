@@ -17,14 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Loader2, Search } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  DataTablePagination,
-  DataTableView,
-  useDataTable,
-} from '@/components/data-table'
+import { DataTablePagination, useDataTable } from '@/components/data-table'
+import { StatusBadge } from '@/components/status-badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -42,6 +40,8 @@ import {
   getAlignedRatioTypes,
   getEffectiveResolutionSelections,
   getOrderedRatioTypes,
+  getPreferredSyncField,
+  getSyncFieldLabel,
   getUpstreamDisplayName,
   isSelectedResolutionValue,
   isSelectableUpstreamValue,
@@ -89,6 +89,7 @@ export function UpstreamRatioSyncTable({
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [ratioTypeFilter, setRatioTypeFilter] = useState<string>('')
+  const [selectedUpstream, setSelectedUpstream] = useState('')
 
   const dataSource = useMemo<ModelRow[]>(() => {
     return Object.entries(differences).map(([model, ratioTypes]) => {
@@ -131,6 +132,17 @@ export function UpstreamRatioSyncTable({
     })
     return [...set]
   }, [filteredData, ratioTypeFilter])
+
+  useEffect(() => {
+    if (upstreamNames.length > 0 && !upstreamNames.includes(selectedUpstream)) {
+      setSelectedUpstream(upstreamNames[0])
+    }
+  }, [selectedUpstream, upstreamNames])
+
+  const visibleUpstreamNames = useMemo(
+    () => (selectedUpstream ? [selectedUpstream] : []),
+    [selectedUpstream]
+  )
 
   const bulkSelectStateByUpstream = useMemo<
     Record<string, UpstreamBulkSelectState>
@@ -209,7 +221,7 @@ export function UpstreamRatioSyncTable({
   )
 
   const columns = useUpstreamRatioSyncColumns(
-    upstreamNames,
+    visibleUpstreamNames,
     bulkSelectStateByUpstream,
     resolutions,
     ratioTypeFilter,
@@ -257,7 +269,7 @@ export function UpstreamRatioSyncTable({
   }
 
   return (
-    <div className='flex h-full min-h-[520px] flex-col gap-4'>
+    <div className='flex flex-col gap-4'>
       <div className='flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center'>
         <div className='relative flex-1'>
           <Search className='text-muted-foreground absolute top-1/2 left-2 h-4 w-4 -translate-y-1/2' />
@@ -295,23 +307,190 @@ export function UpstreamRatioSyncTable({
             </SelectGroup>
           </SelectContent>
         </Select>
+        <Select
+          items={upstreamNames.map((name) => ({
+            value: name,
+            label: getUpstreamDisplayName(name),
+          }))}
+          value={selectedUpstream}
+          onValueChange={(value) => setSelectedUpstream(value ?? '')}
+          disabled={isDisabled || upstreamNames.length === 0}
+        >
+          <SelectTrigger className='w-full sm:w-80'>
+            <SelectValue placeholder={t('Select Sync Source')} />
+          </SelectTrigger>
+          <SelectContent alignItemWithTrigger={false}>
+            <SelectGroup>
+              {upstreamNames.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {getUpstreamDisplayName(name)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
       </div>
 
-      <DataTableView
-        table={table}
-        containerClassName='min-h-0 flex-1 rounded-md'
-        tableContainerClassName='h-full min-h-0'
-        tableHeaderClassName='[background-color:var(--table-header)]'
-        splitHeaderScrollClassName='h-full'
-        bodyContainerClassName='[scrollbar-gutter:stable]'
-        splitHeader
-        getColumnClassName={(_, part) =>
-          part === 'header' ? 'h-11 align-middle' : 'align-top'
-        }
-        getRowClassName={() => 'align-top'}
-        emptyContent={t('No results found')}
-        emptyCellClassName='h-24 text-center'
-      />
+      <div className='overflow-x-auto rounded-md border'>
+        <div className='min-w-[780px]'>
+          <div className='bg-muted/50 grid grid-cols-[minmax(180px,1fr)_minmax(240px,1fr)_minmax(280px,1.2fr)] gap-4 border-b px-3 py-3 text-sm font-medium'>
+            <span>{t('Model')}</span>
+            <span>{t('Current Price')}</span>
+            <div className='flex items-center gap-2'>
+              {selectedUpstream &&
+                bulkSelectStateByUpstream[selectedUpstream]?.selectableCount >
+                  0 && (
+                  <Checkbox
+                    checked={
+                      bulkSelectStateByUpstream[selectedUpstream]
+                        .selectedCount ===
+                      bulkSelectStateByUpstream[selectedUpstream]
+                        .selectableCount
+                    }
+                    indeterminate={
+                      bulkSelectStateByUpstream[selectedUpstream]
+                        .selectedCount > 0 &&
+                      bulkSelectStateByUpstream[selectedUpstream]
+                        .selectedCount <
+                        bulkSelectStateByUpstream[selectedUpstream]
+                          .selectableCount
+                    }
+                    disabled={isDisabled}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        handleBulkSelect(selectedUpstream)
+                      } else {
+                        handleBulkUnselect(selectedUpstream)
+                      }
+                    }}
+                    aria-label={t('Select all (filtered)')}
+                  />
+                )}
+              <span className='truncate'>
+                {selectedUpstream
+                  ? getUpstreamDisplayName(selectedUpstream)
+                  : t('Select Sync Source')}
+              </span>
+            </div>
+          </div>
+
+          {table.getRowModel().rows.length === 0 ? (
+            <div className='text-muted-foreground flex h-24 items-center justify-center text-sm'>
+              {t('No results found')}
+            </div>
+          ) : (
+            table.getRowModel().rows.map((tableRow) => {
+              const row = tableRow.original
+              const fields = getAlignedRatioTypes(
+                row.ratioTypes,
+                visibleUpstreamNames,
+                ratioTypeFilter
+              )
+
+              return (
+                <div
+                  key={row.key}
+                  className='grid grid-cols-[minmax(180px,1fr)_minmax(240px,1fr)_minmax(280px,1.2fr)] gap-4 border-b px-3 py-3 last:border-b-0'
+                >
+                  <div className='min-w-0 py-1'>
+                    <p className='text-sm font-medium break-all'>{row.model}</p>
+                  </div>
+                  <div className='flex min-w-0 flex-col gap-2'>
+                    {fields.map((ratioType) => {
+                      const current = row.ratioTypes[ratioType]?.current
+                      return (
+                        <div
+                          key={ratioType}
+                          className='bg-muted/30 flex min-h-8 items-center gap-2 rounded px-2'
+                        >
+                          <StatusBadge
+                            label={getSyncFieldLabel(ratioType, t)}
+                            autoColor={ratioType}
+                            size='sm'
+                            copyable={false}
+                            className='min-w-[4.5rem] shrink-0'
+                          />
+                          <span className='min-w-0 truncate text-sm'>
+                            {current === null || current === undefined
+                              ? t('Not Set')
+                              : String(current)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className='flex min-w-0 flex-col gap-2'>
+                    {fields.map((ratioType) => {
+                      const difference = row.ratioTypes[ratioType]
+                      const upstreamValue =
+                        difference?.upstreams?.[selectedUpstream]
+                      const isAvailable =
+                        getPreferredSyncField(
+                          row.ratioTypes,
+                          ratioType,
+                          selectedUpstream
+                        ) === ratioType
+                      const isSelectable =
+                        isAvailable && isSelectableUpstreamValue(upstreamValue)
+                      const isSelected = isSelectedResolutionValue(
+                        resolutions,
+                        row.model,
+                        ratioType,
+                        upstreamValue
+                      )
+
+                      return (
+                        <div
+                          key={ratioType}
+                          className='bg-muted/30 flex min-h-8 items-center gap-2 rounded px-2'
+                        >
+                          <StatusBadge
+                            label={getSyncFieldLabel(ratioType, t)}
+                            autoColor={ratioType}
+                            size='sm'
+                            copyable={false}
+                            className='min-w-[4.5rem] shrink-0'
+                          />
+                          {isSelectable ? (
+                            <>
+                              <Checkbox
+                                checked={isSelected}
+                                disabled={isDisabled}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    onSelectValue(
+                                      row.model,
+                                      ratioType,
+                                      upstreamValue as number | string,
+                                      selectedUpstream
+                                    )
+                                  } else {
+                                    onUnselectValue(row.model, ratioType)
+                                  }
+                                }}
+                                aria-label={t('Apply Sync')}
+                              />
+                              <span className='min-w-0 truncate font-mono text-sm'>
+                                {String(upstreamValue)}
+                              </span>
+                            </>
+                          ) : (
+                            <span className='text-muted-foreground min-w-0 truncate text-sm'>
+                              {upstreamValue === 'same'
+                                ? t('Same as local')
+                                : t('Not Set')}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+      </div>
 
       <div className='shrink-0'>
         <DataTablePagination table={table} />

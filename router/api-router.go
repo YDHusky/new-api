@@ -226,6 +226,16 @@ func SetApiRouter(router *gin.Engine) {
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{
 			ratioSyncRoute.GET("/channels", controller.GetSyncableChannels)
+			ratioSyncRoute.GET("/accounts", controller.GetRatioSyncAccounts)
+			ratioSyncRoute.POST("/accounts", controller.CreateRatioSyncAccount)
+			ratioSyncRoute.PUT("/accounts/:id", controller.UpdateRatioSyncAccount)
+			ratioSyncRoute.DELETE("/accounts/:id", controller.DeleteRatioSyncAccount)
+			ratioSyncRoute.GET("/accounts/:id/keys", controller.GetRatioSyncAccountKeys)
+			ratioSyncRoute.GET("/accounts/:id/groups", controller.GetRatioSyncAccountGroups)
+			ratioSyncRoute.GET("/auto-sync", controller.GetRatioSyncAutoConfig)
+			ratioSyncRoute.PUT("/auto-sync", controller.UpdateRatioSyncAutoConfig)
+			ratioSyncRoute.POST("/auto-sync/run", controller.RunRatioSyncNow)
+			ratioSyncRoute.GET("/logs", controller.GetRatioSyncLogs)
 			ratioSyncRoute.POST("/fetch", controller.FetchUpstreamRatios)
 		}
 		registerChannelRoutes(apiRouter)
