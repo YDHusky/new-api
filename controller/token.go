@@ -1,30 +1,105 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
 
-func buildMaskedTokenResponse(token *model.Token) *model.Token {
+var errTokenGroupNotSelectable = errors.New("token group is not user selectable")
+
+const maxTokenGroups = 10
+
+type tokenRequest struct {
+	model.Token
+	Groups []string `json:"groups"`
+}
+
+type tokenResponse struct {
+	*model.Token
+	Groups []string `json:"groups"`
+}
+
+func normalizeTokenGroups(request tokenRequest) ([]string, error) {
+	groups := request.Groups
+	if groups == nil && request.Group != "" {
+		groups = []string{request.Group}
+	}
+	if len(groups) > maxTokenGroups {
+		return nil, fmt.Errorf("a token can use at most %d groups", maxTokenGroups)
+	}
+	normalized := make([]string, 0, len(groups))
+	seen := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		if _, exists := seen[group]; exists {
+			continue
+		}
+		seen[group] = struct{}{}
+		normalized = append(normalized, group)
+	}
+	if len(normalized) > 1 && slices.Contains(normalized, "auto") {
+		return nil, errors.New("auto cannot be combined with ordered token groups")
+	}
+	return normalized, nil
+}
+
+func validateTokenGroupSelection(userID int, userGroup string, group string) error {
+	if group == "" {
+		return nil
+	}
+	if userGroup == "" {
+		var err error
+		userGroup, err = model.GetUserGroup(userID, false)
+		if err != nil {
+			return err
+		}
+	}
+	if !service.GroupInUserUsableGroups(userGroup, group) {
+		return errTokenGroupNotSelectable
+	}
+	if group != "auto" && !ratio_setting.ContainsGroupRatio(group) {
+		return errTokenGroupNotSelectable
+	}
+	return nil
+}
+
+func validateTokenGroupSelections(userID int, userGroup string, groups []string) error {
+	for _, group := range groups {
+		if err := validateTokenGroupSelection(userID, userGroup, group); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if token == nil {
 		return nil
 	}
 	maskedToken := *token
 	maskedToken.Key = token.GetMaskedKey()
-	return &maskedToken
+	return &tokenResponse{Token: &maskedToken, Groups: token.GetGroups()}
 }
 
-func buildMaskedTokenResponses(tokens []*model.Token) []*model.Token {
-	maskedTokens := make([]*model.Token, 0, len(tokens))
+func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
+	maskedTokens := make([]*tokenResponse, 0, len(tokens))
 	for _, token := range tokens {
 		maskedTokens = append(maskedTokens, buildMaskedTokenResponse(token))
 	}
@@ -165,8 +240,14 @@ func GetTokenUsage(c *gin.Context) {
 }
 
 func AddToken(c *gin.Context) {
-	token := model.Token{}
-	err := c.ShouldBindJSON(&token)
+	request := tokenRequest{}
+	err := c.ShouldBindJSON(&request)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	token := request.Token
+	groups, err := normalizeTokenGroups(request)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -186,6 +267,14 @@ func AddToken(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
 			return
 		}
+	}
+	if err := validateTokenGroupSelections(c.GetInt("id"), common.GetContextKeyString(c, constant.ContextKeyUserGroup), groups); err != nil {
+		if errors.Is(err, errTokenGroupNotSelectable) {
+			common.ApiErrorI18n(c, i18n.MsgTokenGroupNotSelectable)
+		} else {
+			common.ApiError(c, err)
+		}
+		return
 	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
@@ -219,8 +308,11 @@ func AddToken(c *gin.Context) {
 		ModelLimitsEnabled: token.ModelLimitsEnabled,
 		ModelLimits:        token.ModelLimits,
 		AllowIps:           token.AllowIps,
-		Group:              token.Group,
-		CrossGroupRetry:    token.CrossGroupRetry,
+		CrossGroupRetry:    len(groups) > 1 || token.CrossGroupRetry,
+	}
+	if err := cleanToken.SetGroups(groups); err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -250,12 +342,13 @@ func DeleteToken(c *gin.Context) {
 func UpdateToken(c *gin.Context) {
 	userId := c.GetInt("id")
 	statusOnly := c.Query("status_only")
-	token := model.Token{}
-	err := c.ShouldBindJSON(&token)
+	request := tokenRequest{}
+	err := c.ShouldBindJSON(&request)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	token := request.Token
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
@@ -275,6 +368,24 @@ func UpdateToken(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	groups := cleanToken.GetGroups()
+	if statusOnly == "" {
+		groups, err = normalizeTokenGroups(request)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
+	if statusOnly == "" && !slices.Equal(groups, cleanToken.GetGroups()) {
+		if err := validateTokenGroupSelections(userId, common.GetContextKeyString(c, constant.ContextKeyUserGroup), groups); err != nil {
+			if errors.Is(err, errTokenGroupNotSelectable) {
+				common.ApiErrorI18n(c, i18n.MsgTokenGroupNotSelectable)
+			} else {
+				common.ApiError(c, err)
+			}
+			return
+		}
 	}
 	if token.Status == common.TokenStatusEnabled {
 		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
@@ -297,8 +408,11 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
-		cleanToken.Group = token.Group
-		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		if err := cleanToken.SetGroups(groups); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		cleanToken.CrossGroupRetry = len(groups) > 1 || token.CrossGroupRetry
 	}
 	err = cleanToken.Update()
 	if err != nil {

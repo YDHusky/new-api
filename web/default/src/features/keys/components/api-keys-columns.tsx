@@ -201,6 +201,10 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
       cell: ({ row }) => {
         const apiKey = row.original
         const group = row.getValue('group') as string
+        let displayGroups = apiKey.groups
+        if (displayGroups.length === 0 && group) {
+          displayGroups = [group]
+        }
         const ratio = group && group !== 'auto' ? groupRatios[group] : undefined
 
         if (group === 'auto') {
@@ -226,6 +230,27 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
                 </span>
               </TooltipContent>
             </Tooltip>
+          )
+        }
+        if (displayGroups.length > 1) {
+          return (
+            <TruncatedCell
+              className='-ml-1.5'
+              tooltipContent={displayGroups.join(' -> ')}
+              tooltipClassName='break-all'
+            >
+              <div className='flex items-center gap-1.5'>
+                <GroupBadge
+                  group={displayGroups[0]}
+                  ratio={groupRatios[displayGroups[0]]}
+                />
+                <StatusBadge
+                  label={`+${displayGroups.length - 1}`}
+                  variant='info'
+                  copyable={false}
+                />
+              </div>
+            </TruncatedCell>
           )
         }
         return (

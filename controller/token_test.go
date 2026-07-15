@@ -13,12 +13,18 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type tokenAPIResponse struct {
@@ -32,10 +38,11 @@ type tokenPageResponse struct {
 }
 
 type tokenResponseItem struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Key    string `json:"key"`
-	Status int    `json:"status"`
+	ID     int      `json:"id"`
+	Name   string   `json:"name"`
+	Key    string   `json:"key"`
+	Status int      `json:"status"`
+	Groups []string `json:"groups"`
 }
 
 type tokenKeyResponse struct {
@@ -503,6 +510,96 @@ func TestUpdateTokenMasksKeyInResponse(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), token.Key) {
 		t.Fatalf("update response leaked raw token key: %s", recorder.Body.String())
 	}
+}
+
+func TestAddTokenRejectsNonSelectableGroup(t *testing.T) {
+	db := openTokenControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}))
+	require.NoError(t, db.Create(&model.User{
+		Id:       1,
+		Username: "group-selection-user",
+		Password: "password",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "private",
+	}).Error)
+
+	originalGroups, err := common.Marshal(setting.GetUserUsableGroupsCopy())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(string(originalGroups)))
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+
+	body := map[string]any{
+		"name":            "hidden-group-token",
+		"expired_time":    -1,
+		"unlimited_quota": true,
+		"group":           "private",
+	}
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "private")
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	assert.False(t, response.Success)
+	var count int64
+	require.NoError(t, db.Model(&model.Token{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestAddTokenPersistsOrderedGroups(t *testing.T) {
+	db := openTokenControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}))
+	require.NoError(t, db.Create(&model.User{
+		Id:       1,
+		Username: "ordered-group-user",
+		Password: "password",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}).Error)
+
+	originalGroups, err := common.Marshal(setting.GetUserUsableGroupsCopy())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(string(originalGroups)))
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","backup":"Backup"}`))
+	originalRatios, err := common.Marshal(ratio_setting.GetGroupRatioCopy())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(string(originalRatios)))
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"backup":1}`))
+
+	body := map[string]any{
+		"name":              "ordered-group-token",
+		"expired_time":      -1,
+		"unlimited_quota":   true,
+		"groups":            []string{"default", "backup"},
+		"cross_group_retry": true,
+	}
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+	var token model.Token
+	require.NoError(t, db.Where("name = ?", "ordered-group-token").First(&token).Error)
+	assert.Equal(t, "default", token.Group)
+	assert.Equal(t, []string{"default", "backup"}, token.GetGroups())
+	assert.True(t, token.CrossGroupRetry)
+
+	detailContext, detailRecorder := newAuthenticatedContext(t, http.MethodGet, "/api/token/"+strconv.Itoa(token.Id), nil, 1)
+	detailContext.Params = gin.Params{{Key: "id", Value: strconv.Itoa(token.Id)}}
+	GetToken(detailContext)
+	detailResponse := decodeAPIResponse(t, detailRecorder)
+	require.True(t, detailResponse.Success, detailResponse.Message)
+	var detail tokenResponseItem
+	require.NoError(t, common.Unmarshal(detailResponse.Data, &detail))
+	assert.Equal(t, []string{"default", "backup"}, detail.Groups)
 }
 
 func TestGetTokenKeyRequiresOwnershipAndReturnsFullKey(t *testing.T) {

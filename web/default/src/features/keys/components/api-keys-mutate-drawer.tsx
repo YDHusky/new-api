@@ -78,7 +78,7 @@ import {
 } from '../lib'
 import type { ApiKey } from '../types'
 import {
-  ApiKeyGroupCombobox,
+  ApiKeyGroupSelector,
   type ApiKeyGroupOption,
 } from './api-key-group-combobox'
 import { useApiKeys } from './api-keys-provider'
@@ -150,22 +150,6 @@ export function ApiKeysMutateDrawer({
       )
     }
   }, [open, isUpdate, currentRow, form, defaultUseAutoGroup, backendHasAuto])
-
-  // Correct group after groups load: if the form value is not in available groups, fall back
-  useEffect(() => {
-    if (groups.length === 0) return
-    const currentGroup = form.getValues('group')
-    if (currentGroup && !groups.some((g) => g.value === currentGroup)) {
-      const fallback =
-        groups.find((g) => g.value === 'default')?.value ??
-        groups[0]?.value ??
-        ''
-      form.setValue('group', fallback)
-      if (currentGroup === 'auto') {
-        form.setValue('cross_group_retry', false)
-      }
-    }
-  }, [groups, form])
 
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)
@@ -247,7 +231,7 @@ export function ApiKeysMutateDrawer({
   const quotaPlaceholder = tokensOnly
     ? t('Enter quota in tokens')
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
-  const selectedGroup = form.watch('group')
+  const selectedGroups = form.watch('groups')
   const unlimitedQuota = form.watch('unlimited_quota')
 
   return (
@@ -302,24 +286,28 @@ export function ApiKeysMutateDrawer({
 
               <FormField
                 control={form.control}
-                name='group'
+                name='groups'
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>{t('Group')}</FormLabel>
                     <FormControl>
-                      <ApiKeyGroupCombobox
+                      <ApiKeyGroupSelector
                         options={groups}
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        placeholder={t('Select a group')}
+                        values={field.value}
+                        onValuesChange={field.onChange}
                       />
                     </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Requests start with the first group and fall back in order when no healthy channel is available. Every new request checks the first group again.'
+                      )}
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
 
-              {selectedGroup === 'auto' && (
+              {selectedGroups.length === 1 && selectedGroups[0] === 'auto' && (
                 <FormField
                   control={form.control}
                   name='cross_group_retry'
