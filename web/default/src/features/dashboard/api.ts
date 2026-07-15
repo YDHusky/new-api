@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  DailyTokenUsage,
   FlowQuotaDataItem,
   QuotaDataItem,
   UptimeGroupResult,
@@ -48,6 +49,19 @@ export async function getUserQuotaDates(
     endpoint,
     { params }
   )
+  return res.data
+}
+
+export async function getTokenUsageHeatmap(params: {
+  start_timestamp: number
+  end_timestamp: number
+  timezone: string
+}) {
+  const res = await api.get<{
+    success: boolean
+    data?: DailyTokenUsage[]
+    message?: string
+  }>('/api/data/self/token-heatmap', { params })
   return res.data
 }
 

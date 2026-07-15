@@ -3,12 +3,16 @@ package controller
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
 )
+
+const maxTokenHeatmapRangeSeconds int64 = 366 * 24 * 60 * 60
 
 func parseFlowQuotaTimeRange(c *gin.Context) (int64, int64, bool) {
 	startTimestamp, err := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
@@ -83,6 +87,41 @@ func GetUserQuotaDates(c *gin.Context) {
 		"data":    dates,
 	})
 	return
+}
+
+func GetUserTokenUsageHeatmap(c *gin.Context) {
+	startTimestamp, err := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	if err != nil || startTimestamp <= 0 {
+		common.ApiErrorMsg(c, "invalid start_timestamp")
+		return
+	}
+	endTimestamp, err := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	if err != nil || endTimestamp <= 0 || endTimestamp < startTimestamp {
+		common.ApiErrorMsg(c, "invalid end_timestamp")
+		return
+	}
+	if endTimestamp-startTimestamp > maxTokenHeatmapRangeSeconds {
+		common.ApiErrorMsg(c, "time range cannot exceed 366 days")
+		return
+	}
+
+	timezone := strings.TrimSpace(c.DefaultQuery("timezone", "UTC"))
+	if timezone == "" || len(timezone) > 64 {
+		common.ApiErrorMsg(c, "invalid timezone")
+		return
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		common.ApiErrorMsg(c, "invalid timezone")
+		return
+	}
+
+	dates, err := model.GetDailyTokenUsageByUserId(c.GetInt("id"), startTimestamp, endTimestamp, location)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, dates)
 }
 
 func GetAllFlowQuotaDates(c *gin.Context) {

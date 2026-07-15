@@ -33,6 +33,11 @@ export interface QuotaDataItem {
   quota?: number
 }
 
+export interface DailyTokenUsage {
+  date: string
+  token_used: number
+}
+
 export interface FlowQuotaDataItem {
   user_id?: number
   username?: string
