@@ -32,6 +32,7 @@ import {
   getChannelTypeIcon,
   getChannelTypeLabel,
 } from '@/features/channels/lib/channel-utils'
+import { toIntlLocale } from '@/i18n/languages'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
@@ -159,6 +160,7 @@ function StatusSummary(props: { summary: StatusSummaryValue }) {
 
 function ChannelStatusCard(props: { channel: ChannelStatus }) {
   const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const status = getStatusPresentation(props.channel.status, t)
   const iconName = getChannelTypeIcon(props.channel.type)
   const models = props.channel.models.slice(0, 3)
@@ -196,7 +198,7 @@ function ChannelStatusCard(props: { channel: ChannelStatus }) {
         />
         <Metric
           label={t('Last checked')}
-          value={formatRelativeTime(props.channel.test_time, i18n.language)}
+          value={formatRelativeTime(props.channel.test_time, locale)}
         />
       </div>
 
