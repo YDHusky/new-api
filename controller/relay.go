@@ -234,6 +234,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		retryParam.AdvanceToNextOrderedGroup()
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -336,7 +337,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if retryTimes <= 0 {
-		return false
+		if _, ok := service.NextOrderedTokenGroupIndex(c); !ok {
+			return false
+		}
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
@@ -563,6 +566,7 @@ func RelayTask(c *gin.Context) {
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		retryParam.AdvanceToNextOrderedGroup()
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -621,7 +625,9 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError,
 		return false
 	}
 	if retryTimes <= 0 {
-		return false
+		if _, ok := service.NextOrderedTokenGroupIndex(c); !ok {
+			return false
+		}
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false

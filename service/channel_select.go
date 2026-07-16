@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -44,6 +45,30 @@ func (p *RetryParam) IncreaseRetry() {
 
 func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
+}
+
+func NextOrderedTokenGroupIndex(c *gin.Context) (int, bool) {
+	groups := common.GetContextKeyStringSlice(c, constant.ContextKeyTokenGroups)
+	if len(groups) <= 1 {
+		return 0, false
+	}
+	selectedGroup := common.GetContextKeyString(c, constant.ContextKeyAutoGroup)
+	selectedIndex := slices.Index(groups, selectedGroup)
+	if selectedIndex < 0 || selectedIndex+1 >= len(groups) {
+		return 0, false
+	}
+	return selectedIndex + 1, true
+}
+
+func (p *RetryParam) AdvanceToNextOrderedGroup() bool {
+	nextIndex, ok := NextOrderedTokenGroupIndex(p.Ctx)
+	if !ok {
+		return false
+	}
+	common.SetContextKey(p.Ctx, constant.ContextKeyAutoGroupIndex, nextIndex)
+	p.SetRetry(0)
+	p.ResetRetryNextTry()
+	return true
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.

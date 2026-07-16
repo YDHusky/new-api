@@ -90,3 +90,50 @@ func TestOrderedTokenGroupsFallbackAndRecoverToFirstGroup(t *testing.T) {
 	assert.Equal(t, primary.Id, channel.Id)
 	assert.Equal(t, "primary", selectedGroup)
 }
+
+func TestOrderedTokenGroupsAdvanceAfterUpstreamFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCacheEnabled })
+
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = db
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	t.Cleanup(func() {
+		sqlDB, dbErr := db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	priority := int64(0)
+	primary := model.Channel{Name: "primary", Type: 1, Key: "primary-key", Status: common.ChannelStatusEnabled, Models: "test-model", Group: "primary"}
+	backup := model.Channel{Name: "backup", Type: 1, Key: "backup-key", Status: common.ChannelStatusEnabled, Models: "test-model", Group: "backup"}
+	require.NoError(t, db.Create(&primary).Error)
+	require.NoError(t, db.Create(&backup).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "primary", Model: "test-model", ChannelId: primary.Id, Enabled: true, Priority: &priority, Weight: 100}).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "backup", Model: "test-model", ChannelId: backup.Id, Enabled: true, Priority: &priority, Weight: 100}).Error)
+	model.InitChannelCache()
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroups, []string{"primary", "backup"})
+	retryParam := &RetryParam{Ctx: ctx, TokenGroup: "primary", ModelName: "test-model", Retry: common.GetPointer(0)}
+
+	channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(retryParam)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, primary.Id, channel.Id)
+	assert.Equal(t, "primary", selectedGroup)
+
+	assert.True(t, retryParam.AdvanceToNextOrderedGroup())
+	retryParam.IncreaseRetry()
+	channel, selectedGroup, err = CacheGetRandomSatisfiedChannel(retryParam)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, backup.Id, channel.Id)
+	assert.Equal(t, "backup", selectedGroup)
+}
