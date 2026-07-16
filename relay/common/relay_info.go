@@ -501,6 +501,15 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		},
 	}
 
+	switch typedRequest := request.(type) {
+	case *dto.GeneralOpenAIRequest:
+		info.ReasoningEffort = typedRequest.ReasoningEffort
+	case *dto.OpenAIResponsesRequest:
+		if typedRequest.Reasoning != nil {
+			info.ReasoningEffort = typedRequest.Reasoning.Effort
+		}
+	}
+
 	if info.RelayMode == relayconstant.RelayModeUnknown {
 		info.RelayMode = c.GetInt("relay_mode")
 	}
